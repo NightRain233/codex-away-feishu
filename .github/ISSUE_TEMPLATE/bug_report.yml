@@ -1,0 +1,36 @@
+name: Bug report
+description: Report a reproducible installation, notification, or reply issue.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "Please redact secrets, tokens, open_id, chat_id, private paths, and message content."
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+    validations:
+      required: true
+  - type: input
+    id: codex
+    attributes:
+      label: Codex Desktop version
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Installation mode
+      options:
+        - notify
+        - replies
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: What happened?
+      description: Include exact redacted steps and diagnostic output.
+    validations:
+      required: true

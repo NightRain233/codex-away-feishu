@@ -1,0 +1,19 @@
+name: Feature request
+description: Suggest a focused improvement to Codex Away Feishu.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user workflow should improve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What behavior would you expect?
+    validations:
+      required: true
