@@ -2,6 +2,8 @@ name: Validate
 
 on:
   push:
+    tags:
+      - 'v*'
   pull_request:
 
 jobs:
@@ -31,3 +33,47 @@ jobs:
           yaml.safe_load(text.split("---", 2)[1])
           print("Skill frontmatter is valid")
           PY
+
+  package-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: python
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Skill archive
+        run: |
+          set -euo pipefail
+          staging_dir="$(mktemp -d)"
+          trap 'rm -rf "$staging_dir"' EXIT
+          mkdir -p "$staging_dir/codex-away"
+          cp INSTALL.md "$staging_dir/INSTALL.md"
+          rsync -a \
+            --exclude='__pycache__' \
+            --exclude='.ruff_cache' \
+            --exclude='*.pyc' \
+            codex-away/ "$staging_dir/codex-away/"
+          mkdir -p dist
+          rm -f dist/codex-away-skill-macos.zip
+          (cd "$staging_dir" && zip -r -X "$GITHUB_WORKSPACE/dist/codex-away-skill-macos.zip" INSTALL.md codex-away)
+          unzip -t dist/codex-away-skill-macos.zip
+          unzip -l dist/codex-away-skill-macos.zip
+      - name: Upload archive artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-away-skill-macos
+          path: dist/codex-away-skill-macos.zip
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          release_tag: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$release_tag" >/dev/null 2>&1; then
+            gh release upload "$release_tag" dist/codex-away-skill-macos.zip --clobber
+          else
+            gh release create "$release_tag" dist/codex-away-skill-macos.zip \
+              --title "$release_tag" \
+              --generate-notes
+          fi

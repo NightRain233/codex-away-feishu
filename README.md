@@ -147,7 +147,7 @@ python3.11 scripts/setup.py disable-replies --yes
 
 GitHub Actions 已在每次 push 和 Pull Request 上运行 Ruff、Python 单元测试和 Skill 结构校验。它验证的是源码质量，不会在 Ubuntu runner 上启动 Codex Desktop、配置飞书或申请 macOS 权限。
 
-Release ZIP 可以继续作为 macOS 用户的离线安装包；后续可以增加一个仅在 `v*` 标签触发的打包工作流，自动生成 ZIP 并上传到 GitHub Release。这样 CI 负责可重复构建，GitHub Release 负责分发，用户机器上的运行时和密钥仍不会进入 CI。
+推送 `v*` 标签时，GitHub Actions 会在干净的 Ubuntu runner 上生成 ZIP、验证压缩包内容，并自动创建或更新 GitHub Release。这样 CI 负责可重复构建，GitHub Release 负责分发，用户机器上的运行时和密钥仍不会进入 CI。普通 push 和 Pull Request 只执行质量校验，不会发布安装包。
 
 ## 开发验证
 
