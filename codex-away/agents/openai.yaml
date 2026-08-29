@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Away"
+  short_description: "Send Codex results to Feishu, with optional replies"
+  default_prompt: "Use $codex-away to install Feishu notifications for Codex."
