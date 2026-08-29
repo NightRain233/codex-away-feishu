@@ -42,17 +42,27 @@ Codex Away Feishu -----> Feishu bot -----> 你的飞书
 
 ## 快速安装
 
-### 方式 A：让 Codex 安装 Skill
+### 推荐：一条命令安装 Skill
 
-下载 [`dist/codex-away-skill-macos.zip`](dist/codex-away-skill-macos.zip)，解压后将 `codex-away` 放入 `~/.codex/skills/`，重启 Codex Desktop，然后发送：
-
-```text
-请使用 $codex-away 安装 Codex Away Feishu，默认只安装通知模式。
+```bash
+npx skills add NightRain233/codex-away-feishu --skill codex-away -a codex -g
 ```
 
-安装器会先执行只读检查，在写入本地文件前展示路径并请求确认。需要 macOS、Codex Desktop、Python 3.11+ 和已配置的飞书 CLI。
+重启 Codex Desktop 后，粘贴这句提示词：
 
-### 方式 B：从仓库安装
+```text
+请使用 $codex-away 安装 GitHub 仓库 https://github.com/NightRain233/codex-away-feishu 中的 Codex Away Feishu。
+先阅读 Skill 的安装说明并运行只读 preflight。默认只安装 notify（仅通知）模式，不要开启 replies，不要申请 macOS 辅助功能权限。
+安装前请告诉我会修改哪些本地文件，并在真正写入前等待我的确认。完成后运行 doctor，并告诉我还需要完成哪些飞书配置或重启步骤。
+```
+
+完整安装流程见 [`INSTALL.md`](INSTALL.md)。
+
+### 备选：从 Release ZIP 安装
+
+下载 [`dist/codex-away-skill-macos.zip`](dist/codex-away-skill-macos.zip)，解压后将 `codex-away` 放入 `~/.codex/skills/`，重启 Codex Desktop，然后使用 `INSTALL.md` 中的提示词。安装器会先执行只读检查，在写入本地文件前展示路径并请求确认。
+
+### 开发者：从仓库安装
 
 ```bash
 git clone https://github.com/NightRain233/codex-away-feishu.git
