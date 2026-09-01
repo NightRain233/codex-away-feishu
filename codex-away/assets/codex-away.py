@@ -133,6 +133,41 @@ def state_db_paths() -> list[Path]:
         return []
 
 
+def thread_row_is_subagent(row: sqlite3.Row) -> bool:
+    keys = set(row.keys())
+    if "thread_source" in keys and row["thread_source"] == "subagent":
+        return True
+    if "agent_path" in keys and row["agent_path"]:
+        return True
+    if "source" not in keys:
+        return False
+    try:
+        source = json.loads(row["source"])
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return isinstance(source, dict) and "subagent" in source
+
+
+def rollout_is_subagent(rollout_path: Path) -> bool:
+    try:
+        with rollout_path.open(encoding="utf-8") as handle:
+            first_line = handle.readline()
+        record = json.loads(first_line)
+        payload = record.get("payload") if isinstance(record, dict) else None
+        if not isinstance(payload, dict):
+            return False
+        return bool(
+            payload.get("thread_source") == "subagent"
+            or payload.get("parent_thread_id")
+            or (
+                isinstance(payload.get("source"), dict)
+                and "subagent" in payload["source"]
+            )
+        )
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return False
+
+
 def is_persistent_thread(thread_id: str) -> bool:
     checked_store = False
     for database_path in state_db_paths():
@@ -141,11 +176,23 @@ def is_persistent_thread(thread_id: str) -> bool:
         try:
             database_uri = database_path.resolve().as_uri() + "?mode=ro"
             with sqlite3.connect(database_uri, uri=True, timeout=1) as connection:
+                connection.row_factory = sqlite3.Row
+                columns = {
+                    str(row[1])
+                    for row in connection.execute("PRAGMA table_info(threads)")
+                }
+                selected = ["source", "thread_source", "agent_path"]
+                available = [column for column in selected if column in columns]
+                selection = ", ".join(available) if available else "id"
                 row = connection.execute(
-                    "SELECT 1 FROM threads WHERE id = ? LIMIT 1", (thread_id,)
+                    f"SELECT {selection} FROM threads WHERE id = ? LIMIT 1",
+                    (thread_id,),
                 ).fetchone()
             checked_store = True
             if row:
+                if thread_row_is_subagent(row):
+                    write_log(f"ignored completion for subagent thread {thread_id}")
+                    return False
                 return True
         except (OSError, sqlite3.Error) as error:
             write_log(f"could not inspect Codex thread store: {error}")
@@ -154,7 +201,11 @@ def is_persistent_thread(thread_id: str) -> bool:
     try:
         if sessions_dir.is_dir():
             checked_store = True
-            if next(sessions_dir.rglob(f"*-{thread_id}.jsonl"), None):
+            rollout_path = next(sessions_dir.rglob(f"*-{thread_id}.jsonl"), None)
+            if rollout_path and rollout_is_subagent(rollout_path):
+                write_log(f"ignored completion for subagent thread {thread_id}")
+                return False
+            if rollout_path:
                 return True
     except OSError as error:
         write_log(f"could not inspect Codex sessions: {error}")

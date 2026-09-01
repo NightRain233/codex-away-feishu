@@ -39,6 +39,86 @@ class RuntimeConfigTests(unittest.TestCase):
                 self.assertTrue(AWAY.is_persistent_thread("persistent-thread"))
                 self.assertFalse(AWAY.is_persistent_thread("ephemeral-thread"))
 
+    def test_notification_runtime_ignores_persistent_subagent_threads(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            state_db = Path(temporary_directory) / "state.sqlite"
+            with sqlite3.connect(state_db) as connection:
+                connection.execute(
+                    "CREATE TABLE threads ("
+                    "id TEXT PRIMARY KEY, source TEXT, thread_source TEXT, "
+                    "agent_path TEXT)"
+                )
+                connection.execute(
+                    "INSERT INTO threads VALUES (?, ?, ?, ?)",
+                    (
+                        "root-thread",
+                        "vscode",
+                        "user",
+                        None,
+                    ),
+                )
+                connection.execute(
+                    "INSERT INTO threads VALUES (?, ?, ?, ?)",
+                    (
+                        "child-thread",
+                        json.dumps(
+                            {
+                                "subagent": {
+                                    "thread_spawn": {
+                                        "parent_thread_id": "root-thread",
+                                        "depth": 1,
+                                    }
+                                }
+                            }
+                        ),
+                        "subagent",
+                        "/root/review",
+                    ),
+                )
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_AWAY_CODEX_STATE_DB": str(state_db),
+                    "CODEX_AWAY_HOME": temporary_directory,
+                },
+                clear=False,
+            ):
+                self.assertTrue(AWAY.is_persistent_thread("root-thread"))
+                self.assertFalse(AWAY.is_persistent_thread("child-thread"))
+                AWAY.enable("always", None)
+                with patch.object(AWAY, "send_messages") as send:
+                    AWAY.process_event(
+                        {
+                            "thread-id": "child-thread",
+                            "turn-id": "child-turn",
+                            "cwd": "/friend/project",
+                            "last-assistant-message": "child complete",
+                        },
+                        "complete",
+                    )
+                send.assert_not_called()
+
+    def test_notification_runtime_detects_subagent_from_legacy_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            state_db = Path(temporary_directory) / "state.sqlite"
+            with sqlite3.connect(state_db) as connection:
+                connection.execute(
+                    "CREATE TABLE threads (id TEXT PRIMARY KEY, source TEXT)"
+                )
+                connection.execute(
+                    "INSERT INTO threads VALUES (?, ?)",
+                    (
+                        "child-thread",
+                        json.dumps({"subagent": {"thread_spawn": {"depth": 1}}}),
+                    ),
+                )
+            with patch.dict(
+                os.environ,
+                {"CODEX_AWAY_CODEX_STATE_DB": str(state_db)},
+                clear=False,
+            ):
+                self.assertFalse(AWAY.is_persistent_thread("child-thread"))
+
     def test_notification_runtime_reads_local_config(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             away_home = Path(temporary_directory)

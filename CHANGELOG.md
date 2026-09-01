@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Ignore completion events from persistent Codex subagent threads while preserving notifications for their parent desktop tasks.
+
 ## 0.1.0 - 2026-08-29
 
 Initial public release.
