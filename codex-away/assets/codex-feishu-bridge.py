@@ -14,6 +14,7 @@ from urllib.parse import quote, urlencode
 
 DEFAULT_HOME = Path.home() / ".codex" / "codex-feishu-bridge"
 DEFAULT_AWAY_HOME = Path.home() / ".codex" / "codex-away"
+MESSAGE_LEASE_SECONDS = 120
 
 
 def bridge_home() -> Path:
@@ -100,14 +101,26 @@ def authorized_event(event: dict[str, Any]) -> bool:
     )
 
 
-def claim_message(message_id: str) -> bool:
+def claim_message(message_id: str, now: int | None = None) -> bool:
+    current_time = int(time.time()) if now is None else now
     state_file = bridge_home() / "state.json"
     with FileLock(bridge_home() / "state.lock"):
         state = load_json(state_file, {"messages": {}})
         messages = dict(state.get("messages") or {})
-        if messages.get(message_id, {}).get("state") in {"running", "completed"}:
+        existing = messages.get(message_id, {})
+        if existing.get("state") == "completed":
             return False
-        messages[message_id] = {"state": "running", "updated_at": int(time.time())}
+        if (
+            existing.get("state") == "running"
+            and int(existing.get("lease_until") or 0) > current_time
+        ):
+            return False
+        messages[message_id] = {
+            "state": "running",
+            "updated_at": current_time,
+            "lease_until": current_time + MESSAGE_LEASE_SECONDS,
+            "attempt_count": int(existing.get("attempt_count") or 0) + 1,
+        }
         state["messages"] = dict(list(messages.items())[-200:])
         save_json(state_file, state)
     return True
@@ -121,6 +134,8 @@ def finish_message(message_id: str, state_name: str, detail: str = "") -> None:
         messages[message_id] = {
             "state": state_name,
             "updated_at": int(time.time()),
+            "lease_until": 0,
+            "attempt_count": int(messages.get(message_id, {}).get("attempt_count") or 0),
             "detail": detail[:500],
         }
         state["messages"] = dict(list(messages.items())[-200:])

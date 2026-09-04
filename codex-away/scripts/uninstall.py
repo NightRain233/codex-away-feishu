@@ -26,11 +26,11 @@ def unwrap_notify(config_path: Path) -> None:
     text = config_path.read_text(encoding="utf-8")
     parsed = tomllib.loads(text)
     notify = parsed.get("notify")
-    if not isinstance(notify, list) or len(notify) < 3:
+    if not isinstance(notify, list):
         return
-    if not (str(notify[1]).endswith("/codex-away.py") and notify[2] == "notify"):
+    updated_notify, changed = unwrap_existing_away(notify)
+    if not changed:
         return
-    upstream = notify[3:]
     lines = text.splitlines(keepends=True)
     for index, line in enumerate(lines):
         if re.match(r"^\s*\[", line):
@@ -38,8 +38,8 @@ def unwrap_notify(config_path: Path) -> None:
         if re.match(r"^\s*notify\s*=", line):
             end_index = array_end(lines, index)
             replacement = (
-                "notify = " + json.dumps(upstream, ensure_ascii=False) + "\n"
-                if upstream
+                "notify = " + json.dumps(updated_notify, ensure_ascii=False) + "\n"
+                if updated_notify
                 else ""
             )
             lines[index : end_index + 1] = [replacement]
@@ -48,6 +48,33 @@ def unwrap_notify(config_path: Path) -> None:
             backup(config_path)
             config_path.write_text(updated, encoding="utf-8")
             return
+
+
+def unwrap_existing_away(command: list[str]) -> tuple[list[str], bool]:
+    if (
+        len(command) >= 3
+        and command[1].endswith("/codex-away.py")
+        and command[2] == "notify"
+    ):
+        return command[3:], True
+
+    for index, item in enumerate(command[:-1]):
+        if item != "--previous-notify":
+            continue
+        try:
+            nested = json.loads(command[index + 1])
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(nested, list) or not all(
+            isinstance(value, str) for value in nested
+        ):
+            continue
+        updated, changed = unwrap_existing_away(nested)
+        if changed:
+            result = list(command)
+            result[index + 1] = json.dumps(updated, ensure_ascii=False)
+            return result, True
+    return command, False
 
 
 def remove_permission_hook(hooks_path: Path) -> None:

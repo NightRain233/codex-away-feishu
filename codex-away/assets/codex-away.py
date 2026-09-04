@@ -13,6 +13,9 @@ from typing import Any
 
 DEFAULT_HOME = Path.home() / ".codex" / "codex-away"
 MAX_MESSAGE_BYTES = 24000
+EVENT_ID_VERSION = 2
+EVENT_LEASE_SECONDS = 120
+EVENT_HISTORY_LIMIT = 100
 
 
 def home_dir() -> Path:
@@ -49,6 +52,8 @@ def default_state() -> dict[str, Any]:
         "thread_id": None,
         "enabled_at": None,
         "sent_event_ids": [],
+        "notification_events": {},
+        "once_event_id": None,
         "reply_targets": {},
         "reply_once_threads": [],
     }
@@ -218,10 +223,28 @@ def is_persistent_thread(thread_id: str) -> bool:
 
 
 def event_id(payload: dict[str, Any], kind: str) -> str:
-    session = str(payload.get("thread-id") or payload.get("session_id") or "")
+    thread = str(payload.get("thread-id") or payload.get("session_id") or "")
     turn = str(payload.get("turn-id") or payload.get("turn_id") or "")
-    detail = str(payload.get("tool_name") or kind)
-    return hashlib.sha256(f"{kind}:{session}:{turn}:{detail}".encode()).hexdigest()[:32]
+    for key in (
+        "event_id",
+        "event-id",
+        "request_id",
+        "request-id",
+        "hook_event_id",
+        "tool_call_id",
+        "tool_use_id",
+    ):
+        if payload.get(key):
+            source = (
+                f"v{EVENT_ID_VERSION}:{kind}:{thread}:{turn}:{key}:{payload[key]}"
+            )
+            return hashlib.sha256(source.encode()).hexdigest()[:32]
+    canonical = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
+    )
+    return hashlib.sha256(
+        f"v{EVENT_ID_VERSION}:{kind}:{canonical}".encode()
+    ).hexdigest()[:32]
 
 
 def matches(state: dict[str, Any], payload: dict[str, Any]) -> bool:
@@ -266,6 +289,210 @@ def split_message(text: str, max_bytes: int = MAX_MESSAGE_BYTES) -> list[str]:
 
 def inline_code(text: str) -> str:
     return text.replace("`", "\\`")
+
+
+def event_body(payload: dict[str, Any], kind: str) -> tuple[str, str, str]:
+    actual_thread = str(payload.get("thread-id") or payload.get("session_id") or "")
+    cwd = str(payload.get("cwd") or "未知")
+    if kind == "permission":
+        tool = str(payload.get("tool_name") or "未知工具")
+        tool_input = payload.get("tool_input") or {}
+        description = (
+            tool_input.get("description") if isinstance(tool_input, dict) else None
+        )
+        body = (
+            f"#### Codex 需要你处理\n\n"
+            f"**原因：** 等待权限批准（{tool}）\n\n"
+            f"**工作目录：** `{inline_code(cwd)}`"
+        )
+        if description:
+            body += f"\n\n**说明：** {description!s}"
+    else:
+        summary = str(
+            payload.get("last-assistant-message") or "本轮没有最终回复。"
+        ).strip()
+        body = f"#### Codex 本轮已结束\n\n**工作目录：** `{inline_code(cwd)}`\n\n{summary}"
+    return body, actual_thread, cwd
+
+
+def reserve_event(
+    unique_id: str,
+    payload: dict[str, Any],
+    kind: str,
+    part_count: int,
+    now: int | None = None,
+) -> bool:
+    current_time = int(time.time()) if now is None else now
+    with StateLock():
+        state = load_state()
+        if not matches(state, payload) or unique_id in state.get("sent_event_ids", []):
+            return False
+        events = dict(state.get("notification_events") or {})
+        existing = events.get(unique_id)
+        record = dict(existing) if isinstance(existing, dict) else {}
+        if record.get("status") == "sent":
+            return False
+        if (
+            record.get("status") == "sending"
+            and int(record.get("lease_until") or 0) > current_time
+        ):
+            return False
+        once_event_id = state.get("once_event_id")
+        if kind == "complete" and state.get("mode") == "once":
+            if once_event_id and once_event_id != unique_id:
+                return False
+            state["once_event_id"] = unique_id
+
+        existing_parts = record.get("parts")
+        if not isinstance(existing_parts, list) or len(existing_parts) != part_count:
+            existing_parts = [
+                {"index": index, "status": "pending"}
+                for index in range(1, part_count + 1)
+            ]
+        record.update(
+            {
+                "id_version": EVENT_ID_VERSION,
+                "kind": kind,
+                "status": "sending",
+                "attempt_count": int(record.get("attempt_count") or 0) + 1,
+                "lease_until": current_time + EVENT_LEASE_SECONDS,
+                "updated_at": current_time,
+                "parts": existing_parts,
+            }
+        )
+        events[unique_id] = record
+        state["notification_events"] = dict(
+            list(events.items())[-EVENT_HISTORY_LIMIT:]
+        )
+        save_state(state)
+    return True
+
+
+def mark_event_retryable(unique_id: str, detail: str) -> None:
+    with StateLock():
+        state = load_state()
+        events = dict(state.get("notification_events") or {})
+        record = events.get(unique_id)
+        if not isinstance(record, dict):
+            return
+        events[unique_id] = {
+            **record,
+            "status": "retryable",
+            "lease_until": 0,
+            "updated_at": int(time.time()),
+            "last_error": detail[:500],
+        }
+        state["notification_events"] = events
+        save_state(state)
+
+
+def send_reserved_parts(
+    parts: list[str], unique_id: str
+) -> list[str] | None:
+    for index, part in enumerate(parts, start=1):
+        with StateLock():
+            state = load_state()
+            events = dict(state.get("notification_events") or {})
+            record = events.get(unique_id)
+            if not isinstance(record, dict):
+                return None
+            stored_parts = record.get("parts")
+            if not isinstance(stored_parts, list) or index > len(stored_parts):
+                return None
+            stored_part = stored_parts[index - 1]
+            if isinstance(stored_part, dict) and stored_part.get("status") == "sent":
+                continue
+            record["lease_until"] = int(time.time()) + EVENT_LEASE_SECONDS
+            record["updated_at"] = int(time.time())
+            events[unique_id] = record
+            state["notification_events"] = events
+            save_state(state)
+
+        response = send_message(part, f"{unique_id}-{index}")
+        if not response:
+            mark_event_retryable(unique_id, f"message part {index} failed")
+            return None
+        message_id = str((response.get("data") or {}).get("message_id") or "")
+        with StateLock():
+            state = load_state()
+            events = dict(state.get("notification_events") or {})
+            record = events.get(unique_id)
+            if not isinstance(record, dict):
+                return None
+            stored_parts = record.get("parts")
+            if not isinstance(stored_parts, list) or index > len(stored_parts):
+                return None
+            stored_parts[index - 1] = {
+                "index": index,
+                "status": "sent",
+                "message_id": message_id,
+            }
+            record.update(
+                {
+                    "parts": stored_parts,
+                    "lease_until": int(time.time()) + EVENT_LEASE_SECONDS,
+                    "updated_at": int(time.time()),
+                    "last_error": "",
+                }
+            )
+            events[unique_id] = record
+            state["notification_events"] = events
+            save_state(state)
+
+    with StateLock():
+        state = load_state()
+        record = (state.get("notification_events") or {}).get(unique_id) or {}
+        return [
+            str(part.get("message_id") or "")
+            for part in record.get("parts", [])
+            if isinstance(part, dict)
+        ]
+
+
+def commit_event(
+    unique_id: str,
+    kind: str,
+    actual_thread: str,
+    cwd: str,
+    message_ids: list[str],
+) -> None:
+    with StateLock():
+        state = load_state()
+        events = dict(state.get("notification_events") or {})
+        record = events.get(unique_id)
+        if not isinstance(record, dict):
+            return
+        record.update(
+            {
+                "status": "sent",
+                "lease_until": 0,
+                "updated_at": int(time.time()),
+                "last_error": "",
+            }
+        )
+        events[unique_id] = record
+        state["notification_events"] = events
+        sent = list(state.get("sent_event_ids", []))
+        sent.append(unique_id)
+        state["sent_event_ids"] = sent[-EVENT_HISTORY_LIMIT:]
+        if kind == "complete" and actual_thread and replies_enabled():
+            reply_targets = dict(state.get("reply_targets", {}))
+            target = {"thread_id": actual_thread, "cwd": cwd}
+            for message_id in message_ids:
+                if message_id:
+                    reply_targets[message_id] = target
+            state["reply_targets"] = dict(list(reply_targets.items())[-100:])
+        if kind == "complete" and actual_thread:
+            state["reply_once_threads"] = [
+                item
+                for item in state.get("reply_once_threads", [])
+                if item != actual_thread
+            ]
+        if kind == "complete" and state.get("mode") == "once":
+            state["mode"] = "off"
+            state["thread_id"] = None
+            state["once_event_id"] = None
+        save_state(state)
 
 
 def send_message(text: str, unique_id: str) -> dict[str, Any] | None:
@@ -333,59 +560,14 @@ def process_event(payload: dict[str, Any], kind: str) -> None:
     if kind == "complete" and actual_thread and not is_persistent_thread(actual_thread):
         return
     unique_id = event_id(payload, kind)
-    with StateLock():
-        state = load_state()
-        if not matches(state, payload) or unique_id in state.get("sent_event_ids", []):
-            return
-
-        cwd = str(payload.get("cwd") or "未知")
-        if kind == "permission":
-            tool = str(payload.get("tool_name") or "未知工具")
-            tool_input = payload.get("tool_input") or {}
-            description = (
-                tool_input.get("description") if isinstance(tool_input, dict) else None
-            )
-            body = (
-                f"#### Codex 需要你处理\n\n"
-                f"**原因：** 等待权限批准（{tool}）\n\n"
-                f"**工作目录：** `{inline_code(cwd)}`"
-            )
-            if description:
-                body += f"\n\n**说明：** {description!s}"
-        else:
-            summary = str(
-                payload.get("last-assistant-message") or "本轮没有最终回复。"
-            ).strip()
-            body = f"#### Codex 本轮已结束\n\n**工作目录：** `{inline_code(cwd)}`\n\n{summary}"
-
-        responses = send_messages(body, unique_id)
-        if not responses:
-            return
-
-        sent = list(state.get("sent_event_ids", []))
-        sent.append(unique_id)
-        state["sent_event_ids"] = sent[-100:]
-        message_ids = [
-            str((response.get("data") or {}).get("message_id") or "")
-            for response in responses
-        ]
-        if kind == "complete" and actual_thread and replies_enabled():
-            reply_targets = dict(state.get("reply_targets", {}))
-            target = {"thread_id": str(actual_thread), "cwd": cwd}
-            for message_id in message_ids:
-                if message_id:
-                    reply_targets[message_id] = target
-            state["reply_targets"] = dict(list(reply_targets.items())[-100:])
-        if kind == "complete" and actual_thread:
-            state["reply_once_threads"] = [
-                item
-                for item in state.get("reply_once_threads", [])
-                if item != actual_thread
-            ]
-        if kind == "complete" and state.get("mode") == "once":
-            state["mode"] = "off"
-            state["thread_id"] = None
-        save_state(state)
+    body, actual_thread, cwd = event_body(payload, kind)
+    parts = split_message(body)
+    if not reserve_event(unique_id, payload, kind, len(parts)):
+        return
+    message_ids = send_reserved_parts(parts, unique_id)
+    if message_ids is None:
+        return
+    commit_event(unique_id, kind, actual_thread, cwd, message_ids)
 
 
 def run_upstream(payload_json: str, upstream: list[str]) -> None:
@@ -417,6 +599,8 @@ def enable(mode: str, thread_id: str | None) -> int:
                 "thread_id": selected_thread,
                 "enabled_at": int(time.time()),
                 "sent_event_ids": [],
+                "notification_events": {},
+                "once_event_id": None,
             }
         )
         save_state(state)
@@ -467,6 +651,14 @@ def show_status() -> int:
     print(f"mode: {state.get('mode', 'off')}")
     print(f"thread: {state.get('thread_id') or 'any'}")
     print(f"replies: {'enabled' if replies_enabled() else 'disabled'}")
+    events = state.get("notification_events") or {}
+    for state_name in ("sending", "retryable"):
+        count = sum(
+            1
+            for record in events.values()
+            if isinstance(record, dict) and record.get("status") == state_name
+        )
+        print(f"notifications_{state_name}: {count}")
     return 0
 
 

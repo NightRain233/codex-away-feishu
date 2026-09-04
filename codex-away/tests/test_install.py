@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +12,15 @@ SPEC = importlib.util.spec_from_file_location("codex_away_install", SCRIPT)
 assert SPEC and SPEC.loader
 INSTALL = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(INSTALL)
+
+SCRIPTS = SCRIPT.parent
+sys.path.insert(0, str(SCRIPTS))
+UNINSTALL_SPEC = importlib.util.spec_from_file_location(
+    "codex_away_uninstall", SCRIPTS / "uninstall.py"
+)
+assert UNINSTALL_SPEC and UNINSTALL_SPEC.loader
+UNINSTALL = importlib.util.module_from_spec(UNINSTALL_SPEC)
+UNINSTALL_SPEC.loader.exec_module(UNINSTALL)
 
 
 class InstallConfigTests(unittest.TestCase):
@@ -83,6 +93,67 @@ class InstallConfigTests(unittest.TestCase):
                 json.loads(parsed["notify"][3]),
                 ["/new/python", "/new/codex-away.py", "notify"],
             )
+
+    def test_uninstall_recursively_removes_nested_notify_wrapper(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config = Path(temporary_directory) / "config.toml"
+            nested_away = json.dumps(
+                [
+                    "/old/python",
+                    "/old/codex-away.py",
+                    "notify",
+                    "/original/notify",
+                ]
+            )
+            inner = json.dumps(
+                ["/inner-wrapper", "--previous-notify", nested_away]
+            )
+            config.write_text(
+                "notify = "
+                + json.dumps(
+                    ["/outer-wrapper", "--previous-notify", inner]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            INSTALL.update_notify(
+                config, Path("/new/python"), Path("/new/codex-away.py")
+            )
+
+            UNINSTALL.unwrap_notify(config)
+
+            notify = tomllib.loads(config.read_text(encoding="utf-8"))["notify"]
+            inner_result = json.loads(notify[2])
+            self.assertEqual(
+                json.loads(inner_result[2]), ["/original/notify"]
+            )
+
+    def test_uninstall_preserves_malformed_nested_notify(self) -> None:
+        command = [
+            "/computer-use",
+            "turn-ended",
+            "--previous-notify",
+            "not-json",
+        ]
+
+        updated, changed = UNINSTALL.unwrap_existing_away(command)
+
+        self.assertFalse(changed)
+        self.assertEqual(updated, command)
+
+    def test_uninstall_unwraps_top_level_notify(self) -> None:
+        updated, changed = UNINSTALL.unwrap_existing_away(
+            [
+                "/python",
+                "/runtime/codex-away.py",
+                "notify",
+                "/original/notify",
+            ]
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(updated, ["/original/notify"])
 
     def test_permission_hook_merges_with_existing_hooks(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

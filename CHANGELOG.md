@@ -3,6 +3,9 @@
 ## Unreleased
 
 - Ignore completion events from persistent Codex subagent threads while preserving notifications for their parent desktop tasks.
+- Make notification delivery recoverable with short state locks, event leases, stable request-aware deduplication, and per-part progress for long messages.
+- Allow expired Feishu reply jobs to be reclaimed instead of remaining permanently stuck in `running`.
+- Recursively remove nested codex-away notify wrappers during uninstall while preserving surrounding callbacks.
 
 ## 0.1.0 - 2026-08-29
 
