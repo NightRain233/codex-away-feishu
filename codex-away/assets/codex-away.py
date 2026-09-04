@@ -365,6 +365,9 @@ def reserve_event(
             list(events.items())[-EVENT_HISTORY_LIMIT:]
         )
         save_state(state)
+    write_log(
+        f"event {unique_id[:8]} reserved kind={kind} attempt={record['attempt_count']}"
+    )
     return True
 
 
@@ -384,6 +387,7 @@ def mark_event_retryable(unique_id: str, detail: str) -> None:
         }
         state["notification_events"] = events
         save_state(state)
+    write_log(f"event {unique_id[:8]} retryable: {detail[:200]}")
 
 
 def send_reserved_parts(
@@ -493,6 +497,7 @@ def commit_event(
             state["thread_id"] = None
             state["once_event_id"] = None
         save_state(state)
+    write_log(f"event {unique_id[:8]} sent parts={len(message_ids)}")
 
 
 def send_message(text: str, unique_id: str) -> dict[str, Any] | None:

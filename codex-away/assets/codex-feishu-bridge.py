@@ -35,6 +35,10 @@ def log(message: str) -> None:
         handle.write(time.strftime("%Y-%m-%dT%H:%M:%S%z ") + message + "\n")
 
 
+def id_prefix(value: str) -> str:
+    return value[:8]
+
+
 class FileLock:
     def __init__(self, lock_file: Path):
         self.lock_file = lock_file
@@ -215,7 +219,9 @@ def dispatch(event: dict[str, Any]) -> bool:
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         finish_message(message_id, "failed", str(error))
-        log(f"could not arm reply notification for thread={thread_id}: {error}")
+        log(
+            f"could not arm reply notification for thread={id_prefix(thread_id)}: {error}"
+        )
         return False
     if arm_result.returncode != 0:
         finish_message(message_id, "failed", "could not arm completion notification")
@@ -232,23 +238,31 @@ def dispatch(event: dict[str, Any]) -> bool:
             )
             if result.returncode != 0:
                 log(
-                    f"could not disarm reply notification for thread={thread_id}: {result.stderr[:500]}"
+                    "could not disarm reply notification for "
+                    f"thread={id_prefix(thread_id)}: {result.stderr[:500]}"
                 )
         except (OSError, subprocess.TimeoutExpired) as error:
-            log(f"could not disarm reply notification for thread={thread_id}: {error}")
+            log(
+                "could not disarm reply notification for "
+                f"thread={id_prefix(thread_id)}: {error}"
+            )
 
     error_detail = submit_to_desktop(thread_id, prompt)
     if error_detail is not None:
         disarm()
         finish_message(message_id, "failed", error_detail)
         log(
-            f"desktop submit failed message={message_id} thread={thread_id}: "
+            f"desktop submit failed message={id_prefix(message_id)} "
+            f"thread={id_prefix(thread_id)}: "
             f"{error_detail[:500]}"
         )
         return False
 
     finish_message(message_id, "completed")
-    log(f"desktop submit completed message={message_id} thread={thread_id}")
+    log(
+        f"desktop submit completed message={id_prefix(message_id)} "
+        f"thread={id_prefix(thread_id)}"
+    )
     return True
 
 
